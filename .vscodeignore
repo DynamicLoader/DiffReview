@@ -1,0 +1,11 @@
+node_modules/**
+src/**
+test/**
+scripts/**
+.vscode/**
+.vscode-test/**
+*.zip
+*.vsix
+package-lock.json
+tsconfig.json
+TESTING.md

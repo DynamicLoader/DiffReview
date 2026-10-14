@@ -1,0 +1,268 @@
+{
+  "name": "diff-review",
+  "displayName": "Diff Review",
+  "description": "Review any Git baseline against your working tree with native diffs, inline comments and LLM-ready exports.",
+  "version": "0.1.7",
+  "publisher": "localreview",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc --noEmit -p .",
+    "test": "npm run compile && node --test test/core.test.cjs test/extension.test.cjs",
+    "test:integration": "npm run compile && node scripts/integration.cjs",
+    "package": "npm run compile && vsce package --allow-missing-repository --out deliverables/diff-review-0.1.7.vsix"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "diffReview.start",
+        "title": "Start Review / Select Baseline",
+        "category": "Diff Review",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "diffReview.resume",
+        "title": "Resume Review",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.refresh",
+        "title": "Refresh Changes",
+        "category": "Diff Review",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "diffReview.openDiff",
+        "title": "Open Diff",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.addComment",
+        "title": "Add Review Comment",
+        "category": "Diff Review",
+        "icon": "$(comment-add)"
+      },
+      {
+        "command": "diffReview.reply",
+        "title": "Save Comment",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.editComment",
+        "title": "Edit Comment",
+        "category": "Diff Review",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "diffReview.discard",
+        "title": "Discard",
+        "category": "Diff Review",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "diffReview.discardDraft",
+        "title": "Discard",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.toggleResolved",
+        "title": "Resolve / Reopen",
+        "category": "Diff Review",
+        "icon": "$(check)"
+      },
+      {
+        "command": "diffReview.reanchor",
+        "title": "Attach Comment to Current Selection",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.copy",
+        "title": "Copy Review for LLM",
+        "category": "Diff Review",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "diffReview.export",
+        "title": "Export Review (Markdown / JSON)",
+        "category": "Diff Review",
+        "icon": "$(export)"
+      },
+      {
+        "command": "diffReview.saveEdit",
+        "title": "Save Comment",
+        "category": "Diff Review"
+      },
+      {
+        "command": "diffReview.cancelEdit",
+        "title": "Discard Changes",
+        "category": "Diff Review"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diffReview",
+          "title": "Diff Review",
+          "icon": "media/review.svg"
+        }
+      ]
+    },
+    "views": {
+      "diffReview": [
+        {
+          "id": "diffReview.files",
+          "name": "Changes & Comments"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "diffReview.files",
+        "contents": "Compare a Git baseline with the current workspace.\n[Start Review](command:diffReview.start)\n[Resume Review](command:diffReview.resume)",
+        "when": "!diffReview.active"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "diffReview.start",
+          "when": "view == diffReview.files",
+          "group": "navigation@1"
+        },
+        {
+          "command": "diffReview.refresh",
+          "when": "view == diffReview.files && diffReview.active",
+          "group": "navigation@2"
+        },
+        {
+          "command": "diffReview.copy",
+          "when": "view == diffReview.files && diffReview.active",
+          "group": "navigation@3"
+        },
+        {
+          "command": "diffReview.export",
+          "when": "view == diffReview.files && diffReview.active",
+          "group": "navigation@4"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "diffReview.addComment",
+          "when": "diffReview.active && (resourceScheme == file || resourceScheme == vscode-remote || resourceScheme == diff-review-base)",
+          "group": "diffReview@1"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "diffReview.reply",
+          "when": "commentController == diff-review && commentThread != saved && commentThread != editing",
+          "group": "inline@1"
+        },
+        {
+          "command": "diffReview.discardDraft",
+          "when": "commentController == diff-review && commentThread != saved && commentThread != editing",
+          "group": "inline@2"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "diffReview.toggleResolved",
+          "when": "commentController == diff-review && commentThread == saved",
+          "group": "navigation@1"
+        },
+        {
+          "command": "diffReview.editComment",
+          "when": "commentController == diff-review && commentThread == saved",
+          "group": "navigation@2"
+        },
+        {
+          "command": "diffReview.discard",
+          "when": "commentController == diff-review && commentThread == saved",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "diffReview.toggleResolved",
+          "when": "view == diffReview.files && viewItem == reviewComment",
+          "group": "inline@1"
+        },
+        {
+          "command": "diffReview.editComment",
+          "when": "view == diffReview.files && viewItem == reviewComment",
+          "group": "inline@2"
+        },
+        {
+          "command": "diffReview.discard",
+          "when": "view == diffReview.files && viewItem == reviewComment",
+          "group": "inline@3"
+        },
+        {
+          "command": "diffReview.reanchor",
+          "when": "view == diffReview.files && viewItem == reviewComment",
+          "group": "review@1"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "diffReview.saveEdit",
+          "when": "commentController == diff-review && comment == editing",
+          "group": "inline@1"
+        },
+        {
+          "command": "diffReview.cancelEdit",
+          "when": "commentController == diff-review && comment == editing",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Diff Review",
+      "properties": {
+        "diffReview.contextLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Context lines included around each reviewed range."
+        },
+        "diffReview.includeResolvedInExport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include resolved comments in Markdown exports."
+        },
+        "diffReview.gitPath": {
+          "type": "string",
+          "default": "git",
+          "description": "Git executable path."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.96.0",
+    "@vscode/test-electron": "^2.5.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.7.0"
+  }
+}
