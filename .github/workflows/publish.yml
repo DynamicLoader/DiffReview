@@ -1,0 +1,114 @@
+name: Publish to VS Code Marketplace
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: marketplace
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release version
+        id: release
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const manifest = require('./package.json');
+          const lock = require('./package-lock.json');
+          const version = manifest.version;
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error('Marketplace releases require a stable version such as 0.1.19.');
+          }
+          if (process.env.GITHUB_REF !== `refs/tags/v${version}`) {
+            throw new Error(`Run this workflow on the v${version} tag matching package.json.`);
+          }
+          if (lock.version !== version || lock.packages[''].version !== version) {
+            throw new Error('package-lock.json version must match package.json.');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            `vsix=deliverables/${manifest.name}-${version}.vsix\n`);
+          NODE
+
+      - name: Validate publishing credentials
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [[ -n "$AZURE_CLIENT_ID" ]]; then
+            if [[ -z "$AZURE_TENANT_ID" ]]; then
+              echo '::error::Set the AZURE_TENANT_ID repository variable for Entra ID publishing.'
+              exit 1
+            fi
+          elif [[ -z "$VSCE_PAT" ]]; then
+            echo '::error::Configure Entra ID variables or the VSCE_PAT repository secret. See DEVELOPMENT.md.'
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package extension
+        run: npm run package
+
+      - name: Save VSIX artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: marketplace-vsix
+          path: ${{ steps.release.outputs.vsix }}
+          if-no-files-found: error
+
+      - name: Sign in with Microsoft Entra ID
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Publish with Microsoft Entra ID
+        if: vars.AZURE_CLIENT_ID != ''
+        env:
+          VSIX_PATH: ${{ steps.release.outputs.vsix }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: npx --no-install vsce publish --azure-credential --packagePath "$VSIX_PATH"
+
+      - name: Publish with PAT
+        if: vars.AZURE_CLIENT_ID == ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX_PATH: ${{ steps.release.outputs.vsix }}
+        run: npx --no-install vsce publish --packagePath "$VSIX_PATH"

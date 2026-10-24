@@ -26,11 +26,23 @@ export async function listChanges(root: string, sha: string, git = 'git'): Promi
     runGit(root, ['ls-files', '--others', '--exclude-standard', '-z'], git)
   ]);
   const result = parseNameStatus(tracked);
-  const seen = new Set(result.map(c => c.path));
+  const seen = new Map(result.map(c => [c.path, c]));
+  const restored = new Set<Change>();
   for (const file of untracked.split('\0').filter(Boolean)) {
-    if (!seen.has(file)) { result.push({ path: file, basePath: file, status: 'U' }); }
+    const existing = seen.get(file);
+    if (!existing) { result.push({ path: file, basePath: file, status: 'U' }); }
+    else if (existing.status === 'D') {
+      // Git's tracked diff cannot see a file recreated after its deletion was staged or committed.
+      // Hash with the path's clean filters so CRLF and attributes match Git's baseline blob.
+      const [baseHash, currentHash] = await Promise.all([
+        runGit(root, ['rev-parse', '--verify', sha + ':' + existing.basePath], git),
+        runGit(root, ['hash-object', '--path=' + file, '--', file], git)
+      ]);
+      if (baseHash.trim() === currentHash.trim()) { restored.add(existing); }
+      else { existing.status = 'M'; }
+    }
   }
-  return result.sort((a, b) => a.path.localeCompare(b.path));
+  return result.filter(change => !restored.has(change)).sort((a, b) => a.path.localeCompare(b.path));
 }
 export function relativeFile(root: string, file: string): string | undefined {
   const relative = path.relative(root, file);

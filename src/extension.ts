@@ -4,47 +4,49 @@ import { Change, ReviewComment, ReviewSession, ReviewStore, Side, captureAnchor,
   makeComment, newSession, hash, linesOf, LocatedAnchor } from './model';
 import { baselineChoices, listChanges, readBase, relativeFile, resolveCommit, runGit } from './git';
 import { CommentExport, exportData, markdownReview } from './export';
+import { FilesAction, FilesState, ReviewFile, ReviewFilesView } from './filesView';
+import { BASE_SCHEME as SCHEME, FILES_VIEW_ID, NAMESPACE } from './identifiers';
 
-const SCHEME = 'diff-review-base';
 const STORE_KEY = 'reviews.v1';
 interface VirtualResource { sessionId: string; path: string; empty?: boolean; role?: 'missing-current' }
 interface Target { path: string; basePath: string; side: Side }
 interface EditableComment extends vscode.Comment { reviewId: string }
 type Node = { type: 'file'; change: Change } | { type: 'comment'; comment: ReviewComment };
 
-export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvider<Node> {
+export class ReviewExtension implements vscode.Disposable {
   private store: ReviewStore;
   private disposables: vscode.Disposable[] = [];
-  private emitter = new vscode.EventEmitter<Node | undefined>();
-  readonly onDidChangeTreeData = this.emitter.event;
   readonly controller: vscode.CommentController;
-  private tree: vscode.TreeView<Node>;
+  private filesView: ReviewFilesView;
   private status: vscode.StatusBarItem;
   private threads = new Map<string, vscode.CommentThread>();
+  private threadIds = new WeakMap<vscode.CommentThread, string>();
   private locations = new Map<string, LocatedAnchor>();
   private changes: Change[] = [];
   private baseCache = new Map<string, Promise<string>>();
   private saveQueue: Promise<void> = Promise.resolve();
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
+  private refreshTask?: Promise<void>;
+  private refreshQueued = false;
   private disposed = false;
   get session(): ReviewSession | undefined { return this.store.sessions.find(s => s.id === this.store.activeId); }
   get changedFiles(): readonly Change[] { return this.changes; }
-  private get git(): string { return vscode.workspace.getConfiguration('diffReview').get('gitPath', 'git'); }
-  private get contextLines(): number { return vscode.workspace.getConfiguration('diffReview').get('contextLines', 3); }
+  private get git(): string { return vscode.workspace.getConfiguration(NAMESPACE).get('gitPath', 'git'); }
+  private get contextLines(): number { return vscode.workspace.getConfiguration(NAMESPACE).get('contextLines', 3); }
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.store = context.workspaceState.get<ReviewStore>(STORE_KEY, { version: 1, sessions: [] });
-    this.controller = vscode.comments.createCommentController('diff-review', 'Diff Review');
+    this.controller = vscode.comments.createCommentController(NAMESPACE, 'Local Diff Review');
     this.controller.options = { prompt: 'Write a local review comment', placeHolder: 'Describe the requested change…' };
     this.controller.commentingRangeProvider = {
       provideCommentingRanges: document => this.targetForUri(document.uri)
         ? [new vscode.Range(0, 0, document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length)] : []
     };
-    this.tree = vscode.window.createTreeView('diffReview.files', { treeDataProvider: this, showCollapseAll: true });
+    this.filesView = new ReviewFilesView(file => this.fileUri(file), action => this.handleFilesAction(action));
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
-    this.status.command = 'diffReview.files.focus';
-    this.disposables.push(this.controller, this.tree, this.status, this.emitter,
+    this.status.command = FILES_VIEW_ID + '.focus';
+    this.disposables.push(this.controller, this.filesView, this.status,
       vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         provideTextDocumentContent: uri => this.provideBase(uri)
       }));
@@ -52,6 +54,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
       this.start(typeof ref === 'string' ? ref : undefined, root));
     this.command('resume', () => this.resume());
     this.command('refresh', () => this.refresh());
+    this.command('fileAction', (action?: FilesAction) => action && this.handleFilesAction(action));
     this.command('openDiff', (item: Node | Change | string) => this.openDiff(item));
     this.command('addComment', () => this.addComment());
     this.command('reply', (reply: vscode.CommentReply) => this.reply(reply));
@@ -66,16 +69,81 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     this.command('copy', () => this.copyReview());
     this.command('export', () => this.exportReview());
     this.disposables.push(vscode.workspace.onDidChangeTextDocument(e => {
-      if (e.contentChanges.length && this.targetForUri(e.document.uri)) { this.scheduleRefresh(); }
-    }), vscode.workspace.onDidSaveTextDocument(() => this.scheduleRefresh()),
-    vscode.window.onDidChangeWindowState(e => { if (e.focused) { this.scheduleRefresh(); } }));
+      if (e.contentChanges.length && this.targetForUri(e.document.uri)?.side === 'current') { this.scheduleRefresh(); }
+    }), vscode.workspace.onDidSaveTextDocument(document => {
+      if (this.targetForUri(document.uri)?.side === 'current') { this.scheduleRefresh(); }
+    }));
   }
 
-  async initialize(): Promise<void> { await this.refresh(); }
+  async initialize(): Promise<void> { this.publishReview(); await this.refresh(); }
+
+  get fileList(): FilesState {
+    const session = this.session;
+    if (!session) { return { files: [] }; }
+    const reviewed = new Set(session.reviewedFiles ?? []);
+    const files = new Map<string, ReviewFile>();
+    for (const change of this.changes) {
+      files.set(change.path, { path: change.path, status: change.status, reviewed: reviewed.has(change.path), comments: [] });
+    }
+    for (const comment of session.comments) {
+      let file = files.get(comment.path);
+      if (!file) {
+        file = { path: comment.path, status: '', reviewed: reviewed.has(comment.path), comments: [] };
+        files.set(comment.path, file);
+      }
+      const location = this.locations.get(comment.id);
+      file.comments.push({ id: comment.id, body: comment.body, side: comment.side,
+        line: (location?.start ?? comment.anchor.start) + 1, location: location?.status ?? 'current', resolved: comment.resolved });
+    }
+    return { sessionId: session.id, baseLabel: session.baseLabel,
+      files: [...files.values()].sort((a, b) => a.path.localeCompare(b.path)) };
+  }
+  private publishReview(): void {
+    this.filesView.update(this.fileList);
+    const session = this.session;
+    if (!session) { this.status.hide(); return; }
+    this.status.text = '$(comment-discussion) Review: ' + session.comments.filter(c => !c.resolved).length;
+    this.status.tooltip = session.baseLabel + ' → workspace';
+    this.status.show();
+  }
+  private async handleFilesAction(action: FilesAction): Promise<void> {
+    if (action.type === 'start') { await this.start(); return; }
+    if (action.type === 'resume') { await this.resume(); return; }
+    if (!this.session || action.sessionId !== this.session.id) { this.publishReview(); return; }
+    if (action.type === 'setReviewed') { await this.setReviewed(action.path, action.reviewed); return; }
+    if (action.type === 'openFile') {
+      if (this.fileList.files.some(file => file.path === action.path)) { await this.openDiff(action.path); }
+      return;
+    }
+    if (!('id' in action)) { return; }
+    const comment = this.session.comments.find(note => note.id === action.id);
+    if (!comment) { return; }
+    switch (action.type) {
+      case 'openComment': await this.openDiff({ type: 'comment', comment }); break;
+      case 'editComment':
+        await this.openDiff({ type: 'comment', comment });
+        await this.editComment(comment);
+        break;
+      case 'toggleResolved': await this.toggleResolved(comment); break;
+      case 'discardComment': await this.discard(comment); break;
+      case 'reanchorComment': await this.reanchor(comment); break;
+    }
+  }
+  async setReviewed(file: string, reviewed: boolean): Promise<void> {
+    const session = this.session;
+    if (!session || !(this.changes.some(entry => entry.path === file) || session.comments.some(note => note.path === file))) {
+      throw new Error('File is not in the active review.');
+    }
+    const paths = new Set(session.reviewedFiles ?? []);
+    if (reviewed) { paths.add(file); } else { paths.delete(file); }
+    session.reviewedFiles = [...paths].sort();
+    this.filesView.setReviewed(session.id, file, reviewed);
+    await this.save();
+  }
   private command(name: string, action: (...args: any[]) => unknown): void {
-    this.disposables.push(vscode.commands.registerCommand('diffReview.' + name, async (...args: any[]) => {
+    this.disposables.push(vscode.commands.registerCommand(NAMESPACE + '.' + name, async (...args: any[]) => {
       try { return await action(...args); }
-      catch (error) { void vscode.window.showErrorMessage('Diff Review: ' + errorMessage(error)); }
+      catch (error) { void vscode.window.showErrorMessage('Local Diff Review: ' + errorMessage(error)); }
     }));
   }
   private async save(): Promise<void> {
@@ -188,9 +256,11 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     this.store.activeId = session.id;
     ++this.generation;
     this.disposeThreads();
+    this.changes = [];
+    this.publishReview();
     await this.save();
     await this.refresh();
-    await vscode.commands.executeCommand('diffReview.files.focus');
+    await vscode.commands.executeCommand(FILES_VIEW_ID + '.focus');
   }
   async resume(): Promise<void> {
     if (!this.store.sessions.length) { void vscode.window.showInformationMessage('No saved reviews. Start a review first.'); return; }
@@ -203,6 +273,8 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     this.store.activeId = selection.session.id;
     ++this.generation;
     this.disposeThreads();
+    this.changes = [];
+    this.publishReview();
     await this.save();
     await this.refresh();
   }
@@ -210,15 +282,31 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     if (!this.session || this.disposed) { return; }
     if (this.timer) { clearTimeout(this.timer); }
     this.timer = setTimeout(() => { void this.refresh().catch(e => {
-      void vscode.window.showErrorMessage('Diff Review: ' + errorMessage(e));
+      void vscode.window.showErrorMessage('Local Diff Review: ' + errorMessage(e));
     }); }, 350);
   }
   async refresh(): Promise<void> {
-    const generation = ++this.generation;
+    ++this.generation;
+    this.refreshQueued = true;
+    if (!this.refreshTask) {
+      this.refreshTask = this.drainRefreshes().finally(() => { this.refreshTask = undefined; });
+    }
+    await this.refreshTask;
+  }
+  private async drainRefreshes(): Promise<void> {
+    while (this.refreshQueued && !this.disposed) {
+      this.refreshQueued = false;
+      try { await this.refreshNow(this.generation); }
+      catch (error) { if (!this.refreshQueued) { throw error; } }
+    }
+  }
+  private async refreshNow(generation: number): Promise<void> {
     const session = this.session;
-    await vscode.commands.executeCommand('setContext', 'diffReview.active', Boolean(session));
+    await vscode.commands.executeCommand('setContext', NAMESPACE + '.active', Boolean(session));
+    if (generation !== this.generation || this.disposed) { return; }
     if (!session) { this.status.hide(); return; }
     const changes = await listChanges(session.rootPath, session.baseSha, this.git);
+    if (generation !== this.generation || this.disposed) { return; }
     for (const document of vscode.workspace.textDocuments) {
       const target = this.targetForUri(document.uri);
       if (!document.isDirty || !target || target.side !== 'current' || changes.some(c => c.path === target.path)) { continue; }
@@ -230,19 +318,19 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     this.changes = changes.sort((a, b) => a.path.localeCompare(b.path));
     // Relocation uses immutable excerpts, never a guessed nearest matching line.
     for (const comment of session.comments) {
+      const anchor = comment.anchor;
       let location: LocatedAnchor;
-      try { location = locateAnchor(comment.anchor, await this.sourceFor(comment, session)); }
+      try {
+        const source = await this.sourceFor(comment, session);
+        location = locateAnchor(anchor, source);
+      }
       catch { location = { start: comment.anchor.start, end: comment.anchor.end, status: 'outdated' }; }
       if (generation !== this.generation || this.disposed) { return; }
+      if (!session.comments.includes(comment) || comment.anchor !== anchor) { continue; }
       this.locations.set(comment.id, location);
       this.syncThread(comment, location);
     }
-    this.tree.description = session.baseLabel + ' → workspace';
-    this.tree.message = changes.length ? undefined : 'No file changes. Existing comments remain available below.';
-    this.status.text = '$(comment-discussion) Review: ' + session.comments.filter(c => !c.resolved).length;
-    this.status.tooltip = session.baseLabel + ' → workspace';
-    this.status.show();
-    this.emitter.fire(undefined);
+    this.publishReview();
   }
   private async sourceFor(comment: ReviewComment, session = this.session): Promise<string> {
     if (comment.side === 'base') { return this.baseContent(comment.basePath, session); }
@@ -293,6 +381,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
         }
       }
     }
+    this.threadIds.set(thread, comment.id);
     thread.range = this.asRange(location, comment.anchor.lines.at(-1)?.length ?? 0);
     thread.contextValue = thread.comments[0]?.mode === vscode.CommentMode.Editing ? 'editing' : 'saved';
     thread.canReply = false;
@@ -303,42 +392,6 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     for (const thread of this.threads.values()) { thread.dispose(); }
     this.threads.clear();
     this.locations.clear();
-  }
-  getTreeItem(node: Node): vscode.TreeItem {
-    if (node.type === 'file') {
-      const count = this.session?.comments.filter(c => c.path === node.change.path).length ?? 0;
-      const item = new vscode.TreeItem(node.change.path, count ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
-      item.description = node.change.status + (count ? ' · ' + count + ' comments' : '');
-      item.resourceUri = this.fileUri(node.change.path);
-      item.contextValue = 'reviewFile';
-      item.command = { command: 'diffReview.openDiff', title: 'Open Diff', arguments: [node] };
-      return item;
-    }
-    const note = node.comment;
-    const location = this.locations.get(note.id);
-    const stale = location?.status === 'outdated' || location?.status === 'ambiguous';
-    const item = new vscode.TreeItem(note.body.split(/\r?\n/)[0].slice(0, 100), vscode.TreeItemCollapsibleState.None);
-    item.id = note.id;
-    item.contextValue = 'reviewComment';
-    item.description = note.side + ':' + ((location?.start ?? note.anchor.start) + 1) +
-      (stale ? ' · ' + location?.status : note.resolved ? ' · resolved' : '');
-    item.iconPath = new vscode.ThemeIcon(stale ? 'warning' : note.resolved ? 'pass' : 'comment');
-    item.tooltip = note.body;
-    item.command = { command: 'diffReview.openDiff', title: 'Open Comment', arguments: [node] };
-    return item;
-  }
-  getChildren(node?: Node): Node[] {
-    const session = this.session;
-    if (!session) { return []; }
-    if (node?.type === 'comment') { return []; }
-    if (node?.type === 'file') {
-      return session.comments.filter(c => c.path === node.change.path).map(comment => ({ type: 'comment', comment }));
-    }
-    const files = new Map(this.changes.map(c => [c.path, c]));
-    for (const note of session.comments) {
-      if (!files.has(note.path)) { files.set(note.path, { path: note.path, basePath: note.basePath, status: '·' }); }
-    }
-    return [...files.values()].sort((a, b) => a.path.localeCompare(b.path)).map(change => ({ type: 'file', change }));
   }
   async openDiff(input: Node | Change | string): Promise<void> {
     const session = this.session;
@@ -360,8 +413,10 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     }
     // The modified URI is the real workspace document; do not make a snapshot here.
     await vscode.commands.executeCommand('vscode.diff', left, right,
-      change.path + ' (' + session.baseLabel + ' ↔ workspace)', { preview: false });
+      change.path + ' (' + session.baseLabel + ' ↔ workspace)', { preview: true });
     if (note) {
+      const thread = this.threads.get(note.id);
+      if (thread) { thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded; }
       const location = this.locations.get(note.id) ?? locateAnchor(note.anchor, await this.sourceFor(note));
       const target = note.side === 'base' ? left : right;
       const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === target.toString());
@@ -402,8 +457,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     if (draft) { this.threads.set(comment.id, draft); }
     this.syncThread(comment, location);
     this.threads.get(comment.id)!.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-    this.status.text = '$(comment-discussion) Review: ' + session.comments.filter(c => !c.resolved).length;
-    this.emitter.fire(undefined);
+    this.publishReview();
     try { await this.save(); }
     catch (error) { throw new Error('Comment is visible but could not be saved. Edit it to retry. ' + errorMessage(error)); }
     return comment;
@@ -414,13 +468,11 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
   }
   private commentFrom(input: unknown): ReviewComment | undefined {
     if (!this.session || !input || typeof input !== 'object') { return undefined; }
-    const value = input as { type?: string; comment?: ReviewComment; id?: string; reviewId?: string; thread?: vscode.CommentThread };
-    if (value.type === 'comment') { return this.session.comments.find(c => c.id === value.comment?.id); }
-    if (value.id) { return this.session.comments.find(c => c.id === value.id); }
-    if (value.reviewId) { return this.session.comments.find(c => c.id === value.reviewId); }
+    const value = input as { type?: string; sessionId?: string; comment?: { id: string }; id?: string; reviewId?: string; thread?: vscode.CommentThread };
+    if (value.sessionId && value.sessionId !== this.session.id) { return undefined; }
     const thread = value.thread ?? input as vscode.CommentThread;
-    const entry = [...this.threads].find(([, t]) => t === thread);
-    return entry ? this.session.comments.find(c => c.id === entry[0]) : undefined;
+    const id = value.type === 'comment' ? value.comment?.id : value.reviewId ?? this.threadIds.get(thread) ?? value.id;
+    return this.session.comments.find(c => c.id === id);
   }
   async editComment(input: unknown): Promise<void> {
     const note = this.commentFrom(input);
@@ -440,7 +492,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     if (text?.trim()) {
       note.body = text.trim();
       note.updatedAt = new Date().toISOString();
-      this.emitter.fire(undefined);
+      this.publishReview();
       await this.save();
     }
   }
@@ -460,7 +512,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
       thread.comments = [rendered];
       thread.contextValue = 'saved';
     }
-    this.emitter.fire(undefined);
+    this.publishReview();
     await this.save();
   }
   async cancelEdit(input: EditableComment): Promise<void> {
@@ -487,16 +539,21 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     this.threads.get(note.id)?.dispose();
     this.threads.delete(note.id);
     this.locations.delete(note.id);
+    this.publishReview();
     await this.save();
-    await this.refresh();
   }
   async toggleResolved(input: unknown): Promise<void> {
     const note = this.commentFrom(input);
     if (!note) { return; }
     note.resolved = !note.resolved;
     note.updatedAt = new Date().toISOString();
+    const thread = this.threads.get(note.id);
+    if (thread) {
+      thread.state = note.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
+      thread.label = note.resolved ? 'Resolved' : (this.locations.get(note.id)?.status === 'moved' ? 'Review · moved' : 'Review');
+    }
+    this.publishReview();
     await this.save();
-    await this.refresh();
   }
   async reanchor(input: unknown): Promise<void> {
     const note = this.commentFrom(input);
@@ -510,8 +567,11 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     const end = this.inclusiveEndLine(selection);
     note.anchor = captureAnchor(editor.document.getText(), { start: selection.start.line, end }, this.contextLines);
     note.updatedAt = new Date().toISOString();
+    const location = locateAnchor(note.anchor, editor.document.getText());
+    this.locations.set(note.id, location);
+    this.syncThread(note, location);
+    this.publishReview();
     await this.save();
-    await this.refresh();
   }
   async buildExport(): Promise<ReturnType<typeof exportData>> {
     const session = this.session;
@@ -534,7 +594,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
   }
   async copyReview(): Promise<string> {
     const text = markdownReview(await this.buildExport(),
-      vscode.workspace.getConfiguration('diffReview').get('includeResolvedInExport', false));
+      vscode.workspace.getConfiguration(NAMESPACE).get('includeResolvedInExport', false));
     await vscode.env.clipboard.writeText(text);
     void vscode.window.showInformationMessage('Review copied. Paste it into your LLM conversation.');
     return text;
@@ -551,7 +611,7 @@ export class ReviewExtension implements vscode.Disposable, vscode.TreeDataProvid
     if (!uri) { return; }
     const data = await this.buildExport();
     const text = json ? JSON.stringify(data, null, 2) : markdownReview(data,
-      vscode.workspace.getConfiguration('diffReview').get('includeResolvedInExport', false));
+      vscode.workspace.getConfiguration(NAMESPACE).get('includeResolvedInExport', false));
     await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
   }
@@ -568,6 +628,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<Review
   const app = new ReviewExtension(context);
   context.subscriptions.push(app);
   try { await app.initialize(); }
-  catch (error) { void vscode.window.showWarningMessage('Diff Review: could not restore review. ' + errorMessage(error)); }
+  catch (error) { void vscode.window.showWarningMessage('Local Diff Review: could not restore review. ' + errorMessage(error)); }
   return app;
 }

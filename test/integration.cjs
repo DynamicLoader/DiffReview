@@ -15,7 +15,7 @@ async function eventually(action, label, deadline = 20000) {
 }
 exports.run = async () => {
   const root = vscode.workspace.workspaceFolders[0].uri;
-  const extension = vscode.extensions.getExtension('localreview.diff-review');
+  const extension = vscode.extensions.getExtension('DynamicLoader.local-diff-review');
   assert.ok(extension, 'extension is discovered');
   const app = await extension.activate();
   await app.start('HEAD', root);
@@ -26,7 +26,7 @@ exports.run = async () => {
   const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
   assert.ok(tab.input instanceof vscode.TabInputTextDiff, 'uses native text diff');
   assert.equal(tab.input.modified.toString(), main.toString(), 'modified side is the actual file URI');
-  assert.equal(tab.input.original.scheme, 'diff-review-base');
+  assert.equal(tab.input.original.scheme, 'localdiffreview-base');
   const baseDoc = await vscode.workspace.openTextDocument(tab.input.original);
   assert.match(baseDoc.getText(), /world/);
   assert.equal(baseDoc.languageId, 'typescript', 'baseline has language syntax highlighting');
@@ -133,6 +133,6 @@ exports.run = async () => {
       'comment deletion and persisted session restoration'
     ]
   };
-  await fs.writeFile(process.env.DIFF_REVIEW_TEST_RESULT, JSON.stringify(results, null, 2));
-  console.log('DIFF REVIEW INTEGRATION PASSED', JSON.stringify(results));
+  await fs.writeFile(process.env.LOCALDIFFREVIEW_TEST_RESULT, JSON.stringify(results, null, 2));
+  console.log('LOCAL DIFF REVIEW INTEGRATION PASSED', JSON.stringify(results));
 };

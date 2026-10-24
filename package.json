@@ -1,10 +1,15 @@
 {
-  "name": "diff-review",
-  "displayName": "Diff Review",
+  "name": "local-diff-review",
+  "displayName": "Local Diff Review",
   "description": "Review any Git baseline against your working tree with native diffs, inline comments and LLM-ready exports.",
-  "version": "0.1.7",
-  "publisher": "localreview",
-  "license": "MIT",
+  "version": "0.1.18",
+  "publisher": "DynamicLoader",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DynamicLoader/DiffReiew.git"
+  },
+  "license": "BSD-3-Clause",
+  "icon": "media/review.png",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -22,235 +27,237 @@
     "virtualWorkspaces": false
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:localdiffreview.files"
   ],
   "scripts": {
     "compile": "tsc -p .",
     "check": "tsc --noEmit -p .",
-    "test": "npm run compile && node --test test/core.test.cjs test/extension.test.cjs",
+    "test": "npm run compile && node --test test/core.test.cjs test/extension.test.cjs test/filesView.test.cjs",
     "test:integration": "npm run compile && node scripts/integration.cjs",
-    "package": "npm run compile && vsce package --allow-missing-repository --out deliverables/diff-review-0.1.7.vsix"
+    "package": "npm run compile && node -e \"require('node:fs').mkdirSync('deliverables', { recursive: true })\" && vsce package --out deliverables"
   },
   "contributes": {
     "commands": [
       {
-        "command": "diffReview.start",
+        "command": "localdiffreview.start",
         "title": "Start Review / Select Baseline",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(git-compare)"
       },
       {
-        "command": "diffReview.resume",
+        "command": "localdiffreview.resume",
         "title": "Resume Review",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.refresh",
+        "command": "localdiffreview.refresh",
         "title": "Refresh Changes",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(refresh)"
       },
       {
-        "command": "diffReview.openDiff",
+        "command": "localdiffreview.openDiff",
         "title": "Open Diff",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.addComment",
+        "command": "localdiffreview.addComment",
         "title": "Add Review Comment",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(comment-add)"
       },
       {
-        "command": "diffReview.reply",
+        "command": "localdiffreview.reply",
         "title": "Save Comment",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.editComment",
+        "command": "localdiffreview.editComment",
         "title": "Edit Comment",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(edit)"
       },
       {
-        "command": "diffReview.discard",
+        "command": "localdiffreview.discard",
         "title": "Discard",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(trash)"
       },
       {
-        "command": "diffReview.discardDraft",
+        "command": "localdiffreview.discardDraft",
         "title": "Discard",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.toggleResolved",
+        "command": "localdiffreview.toggleResolved",
         "title": "Resolve / Reopen",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(check)"
       },
       {
-        "command": "diffReview.reanchor",
+        "command": "localdiffreview.reanchor",
         "title": "Attach Comment to Current Selection",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.copy",
+        "command": "localdiffreview.copy",
         "title": "Copy Review for LLM",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(copy)"
       },
       {
-        "command": "diffReview.export",
+        "command": "localdiffreview.export",
         "title": "Export Review (Markdown / JSON)",
-        "category": "Diff Review",
+        "category": "Local Diff Review",
         "icon": "$(export)"
       },
       {
-        "command": "diffReview.saveEdit",
+        "command": "localdiffreview.saveEdit",
         "title": "Save Comment",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       },
       {
-        "command": "diffReview.cancelEdit",
+        "command": "localdiffreview.cancelEdit",
         "title": "Discard Changes",
-        "category": "Diff Review"
+        "category": "Local Diff Review"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "diffReview",
-          "title": "Diff Review",
+          "id": "localdiffreview",
+          "title": "Local Diff Review",
           "icon": "media/review.svg"
         }
       ]
     },
     "views": {
-      "diffReview": [
+      "localdiffreview": [
         {
-          "id": "diffReview.files",
+          "id": "localdiffreview.files",
+          "type": "tree",
           "name": "Changes & Comments"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "diffReview.files",
-        "contents": "Compare a Git baseline with the current workspace.\n[Start Review](command:diffReview.start)\n[Resume Review](command:diffReview.resume)",
-        "when": "!diffReview.active"
+        "view": "localdiffreview.files",
+        "contents": "Compare a Git baseline with the current workspace.\n[Start Review](command:localdiffreview.start)\n[Resume Review](command:localdiffreview.resume)",
+        "when": "!localdiffreview.active"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "diffReview.start",
-          "when": "view == diffReview.files",
+          "command": "localdiffreview.start",
+          "when": "view == localdiffreview.files",
           "group": "navigation@1"
         },
         {
-          "command": "diffReview.refresh",
-          "when": "view == diffReview.files && diffReview.active",
+          "command": "localdiffreview.refresh",
+          "when": "view == localdiffreview.files && localdiffreview.active",
           "group": "navigation@2"
         },
         {
-          "command": "diffReview.copy",
-          "when": "view == diffReview.files && diffReview.active",
+          "command": "localdiffreview.copy",
+          "when": "view == localdiffreview.files && localdiffreview.active",
           "group": "navigation@3"
         },
         {
-          "command": "diffReview.export",
-          "when": "view == diffReview.files && diffReview.active",
+          "command": "localdiffreview.export",
+          "when": "view == localdiffreview.files && localdiffreview.active",
           "group": "navigation@4"
         }
       ],
       "editor/context": [
         {
-          "command": "diffReview.addComment",
-          "when": "diffReview.active && (resourceScheme == file || resourceScheme == vscode-remote || resourceScheme == diff-review-base)",
-          "group": "diffReview@1"
+          "command": "localdiffreview.addComment",
+          "when": "localdiffreview.active && (resourceScheme == file || resourceScheme == vscode-remote || resourceScheme == localdiffreview-base)",
+          "group": "localdiffreview@1"
         }
       ],
       "comments/commentThread/context": [
         {
-          "command": "diffReview.reply",
-          "when": "commentController == diff-review && commentThread != saved && commentThread != editing",
+          "command": "localdiffreview.reply",
+          "when": "commentController == localdiffreview && commentThread != saved && commentThread != editing",
           "group": "inline@1"
         },
         {
-          "command": "diffReview.discardDraft",
-          "when": "commentController == diff-review && commentThread != saved && commentThread != editing",
+          "command": "localdiffreview.discardDraft",
+          "when": "commentController == localdiffreview && commentThread != saved && commentThread != editing",
           "group": "inline@2"
         }
       ],
       "comments/commentThread/title": [
         {
-          "command": "diffReview.toggleResolved",
-          "when": "commentController == diff-review && commentThread == saved",
+          "command": "localdiffreview.toggleResolved",
+          "when": "commentController == localdiffreview && commentThread == saved",
           "group": "navigation@1"
         },
         {
-          "command": "diffReview.editComment",
-          "when": "commentController == diff-review && commentThread == saved",
+          "command": "localdiffreview.editComment",
+          "when": "commentController == localdiffreview && commentThread == saved",
           "group": "navigation@2"
         },
         {
-          "command": "diffReview.discard",
-          "when": "commentController == diff-review && commentThread == saved",
+          "command": "localdiffreview.discard",
+          "when": "commentController == localdiffreview && commentThread == saved",
           "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
-          "command": "diffReview.toggleResolved",
-          "when": "view == diffReview.files && viewItem == reviewComment",
+          "command": "localdiffreview.toggleResolved",
+          "when": "view == localdiffreview.files && viewItem == reviewComment",
           "group": "inline@1"
         },
         {
-          "command": "diffReview.editComment",
-          "when": "view == diffReview.files && viewItem == reviewComment",
+          "command": "localdiffreview.editComment",
+          "when": "view == localdiffreview.files && viewItem == reviewComment",
           "group": "inline@2"
         },
         {
-          "command": "diffReview.discard",
-          "when": "view == diffReview.files && viewItem == reviewComment",
+          "command": "localdiffreview.discard",
+          "when": "view == localdiffreview.files && viewItem == reviewComment",
           "group": "inline@3"
         },
         {
-          "command": "diffReview.reanchor",
-          "when": "view == diffReview.files && viewItem == reviewComment",
+          "command": "localdiffreview.reanchor",
+          "when": "view == localdiffreview.files && viewItem == reviewComment",
           "group": "review@1"
         }
       ],
       "comments/comment/context": [
         {
-          "command": "diffReview.saveEdit",
-          "when": "commentController == diff-review && comment == editing",
+          "command": "localdiffreview.saveEdit",
+          "when": "commentController == localdiffreview && comment == editing",
           "group": "inline@1"
         },
         {
-          "command": "diffReview.cancelEdit",
-          "when": "commentController == diff-review && comment == editing",
+          "command": "localdiffreview.cancelEdit",
+          "when": "commentController == localdiffreview && comment == editing",
           "group": "inline@2"
         }
       ]
     },
     "configuration": {
-      "title": "Diff Review",
+      "title": "Local Diff Review",
       "properties": {
-        "diffReview.contextLines": {
+        "localdiffreview.contextLines": {
           "type": "number",
           "default": 3,
           "minimum": 0,
           "maximum": 20,
           "description": "Context lines included around each reviewed range."
         },
-        "diffReview.includeResolvedInExport": {
+        "localdiffreview.includeResolvedInExport": {
           "type": "boolean",
           "default": false,
           "description": "Include resolved comments in Markdown exports."
         },
-        "diffReview.gitPath": {
+        "localdiffreview.gitPath": {
           "type": "string",
           "default": "git",
           "description": "Git executable path."

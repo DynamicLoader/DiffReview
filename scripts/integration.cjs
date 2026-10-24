@@ -5,9 +5,9 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 async function main() {
-  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'diff-review-vscode-'));
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'localdiffreview-vscode-'));
   const git = args => execFileSync('git', args, { cwd: folder, stdio: 'pipe' });
-  git(['init', '-q']); git(['config', 'user.name', 'Diff Review Test']); git(['config', 'user.email', 'test@example.invalid']);
+  git(['init', '-q']); git(['config', 'user.name', 'Local Diff Review Test']); git(['config', 'user.email', 'test@example.invalid']);
   await fs.writeFile(path.join(folder, 'helper.ts'), 'export function greet(name: string): string { return "Hello " + name; }\n');
   await fs.writeFile(path.join(folder, 'main.ts'), 'import { greet } from "./helper";\nconst answer = greet("world");\nconsole.log(answer);\n');
   await fs.writeFile(path.join(folder, 'gone.ts'), '// removed file\n');
@@ -22,7 +22,7 @@ async function main() {
   const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE_PATH || await downloadAndUnzipVSCode('1.96.4');
   await runTests({
     vscodeExecutablePath, extensionDevelopmentPath: root, extensionTestsPath: path.join(root, 'test/integration.cjs'),
-    extensionTestsEnv: { DIFF_REVIEW_TEST_RESULT: result },
+    extensionTestsEnv: { LOCALDIFFREVIEW_TEST_RESULT: result },
     launchArgs: [folder, '--no-sandbox', '--disable-gpu', '--skip-welcome', '--skip-release-notes',
       '--disable-workspace-trust', '--user-data-dir=' + path.join(folder, '.vscode-test-user'),
       '--extensions-dir=' + path.join(folder, '.vscode-test-extensions')]

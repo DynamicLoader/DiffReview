@@ -6,6 +6,55 @@ const path = require('node:path');
 const { captureAnchor, locateAnchor, parseNameStatus, hash, fenced } = require('../dist/model');
 const { runGit, resolveCommit, readBase, listChanges, relativeFile, baselineChoices } = require('../dist/git');
 const { exportData, markdownReview } = require('../dist/export');
+const manifest = require('../package.json');
+
+test('user-facing extension name is consistent across the manifest', () => {
+  assert.equal(manifest.publisher + '.' + manifest.name, 'DynamicLoader.local-diff-review');
+  assert.equal(manifest.displayName, 'Local Diff Review');
+  assert.ok(manifest.contributes.commands.every(command => command.category === manifest.displayName));
+  assert.equal(manifest.contributes.viewsContainers.activitybar[0].title, manifest.displayName);
+  assert.equal(manifest.contributes.configuration.title, manifest.displayName);
+  assert.equal(manifest.contributes.viewsContainers.activitybar[0].id, 'localdiffreview');
+  assert.deepEqual(Object.keys(manifest.contributes.views), ['localdiffreview']);
+  assert.ok(manifest.contributes.commands.every(command => command.command.startsWith('localdiffreview.')));
+  assert.ok(Object.keys(manifest.contributes.configuration.properties).every(key => key.startsWith('localdiffreview.')));
+  for (const items of Object.values(manifest.contributes.menus)) {
+    assert.ok(items.every(item => item.command.startsWith('localdiffreview.')));
+  }
+});
+
+test('extension package icon is a square PNG and the sidebar keeps its SVG icon', async () => {
+  assert.equal(manifest.icon, 'media/review.png');
+  const icon = await fs.readFile(path.resolve(__dirname, '..', manifest.icon));
+  assert.deepEqual([...icon.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(icon.toString('ascii', 12, 16), 'IHDR');
+  assert.equal(icon.readUInt32BE(16), 256);
+  assert.equal(icon.readUInt32BE(20), 256);
+  assert.equal(manifest.contributes.viewsContainers.activitybar[0].icon, 'media/review.svg');
+});
+
+test('source, scripts, docs and compiled output contain no retired extension identifiers', async () => {
+  const root = path.resolve(__dirname, '..');
+  // Build the retired spellings from parts so this assertion does not match its own source.
+  const retired = new RegExp([
+    '(?<!local-)' + ['diff', 'review'].join('-'),
+    ['diff', 'Review'].join(''), ['diff', 'View'].join(''),
+    '(?<!local)' + ['diff', 'view'].join(''), ['DIFF', 'REVIEW'].join('_'),
+    '(?<!Local )' + ['Diff', 'Review'].join(' '),
+    ['local', 'diff', 'view'].join(''), ['LOCAL', 'DIFF', 'VIEW'].join('')
+  ].join('|'));
+  async function check(relative) {
+    const target = path.join(root, relative);
+    const stat = await fs.stat(target);
+    if (stat.isDirectory()) {
+      for (const name of await fs.readdir(target)) { await check(path.join(relative, name)); }
+    } else if (/\.(?:ts|cjs|js|json|map|md|svg)$/.test(relative) || !path.extname(relative)) {
+      assert.doesNotMatch(await fs.readFile(target, 'utf8'), retired, relative);
+    }
+  }
+  for (const relative of ['src', 'test', 'scripts', 'media', 'dist', 'README.md', 'TESTING.md', 'LICENSE',
+    'package.json', 'package-lock.json', 'tsconfig.json', '.gitignore', '.vscodeignore']) { await check(relative); }
+});
 
 test('anchors follow an inserted prefix and return after undo', () => {
   const source = 'one\ntwo\nthree\nfour';
@@ -68,11 +117,36 @@ test('Markdown includes excerpts and stale anchors, with resolved filtering', ()
 });
 
 let root;
+
+test('recreated files override staged and committed deletions against the pinned baseline', async t => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'localdiffreview-restored-'));
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+  await runGit(repo, ['init', '-q']);
+  await runGit(repo, ['config', 'user.name', 'Test']);
+  await runGit(repo, ['config', 'user.email', 'test@example.invalid']);
+  await runGit(repo, ['config', 'core.autocrlf', 'false']);
+  const file = 'restored 名.ts';
+  await fs.writeFile(path.join(repo, file), 'baseline\n');
+  await runGit(repo, ['add', '--all']);
+  await runGit(repo, ['commit', '-qm', 'baseline']);
+  const base = await resolveCommit(repo, 'HEAD');
+  await runGit(repo, ['rm', '--', file]);
+  for (const committed of [false, true]) {
+    if (committed) { await runGit(repo, ['commit', '-qm', 'delete']); }
+    assert.equal((await listChanges(repo, base)).find(c => c.path === file).status, 'D');
+    await fs.writeFile(path.join(repo, file), 'recreated with changes\n');
+    assert.deepEqual(await listChanges(repo, base), [{ path: file, basePath: file, status: 'M' }]);
+    await fs.writeFile(path.join(repo, file), 'baseline\n');
+    assert.deepEqual(await listChanges(repo, base), []);
+    await fs.unlink(path.join(repo, file));
+  }
+});
+
 after(async () => { if (root) { await fs.rm(root, { recursive: true, force: true }); } });
 test('real Git repo: pinned base, staged, unstaged, rename, delete and untracked', async () => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), 'diff-review-git-'));
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'localdiffreview-git-'));
   await runGit(root, ['init', '-q']);
-  await runGit(root, ['config', 'user.name', 'Diff Review Test']);
+  await runGit(root, ['config', 'user.name', 'Local Diff Review Test']);
   await runGit(root, ['config', 'user.email', 'test@example.invalid']);
   for (const [name, content] of [['modify.ts', 'old\n'], ['rename 名.ts', 'same content\n'], ['delete.ts', 'gone\n'], ['staged.ts', 'before\n']]) {
     await fs.writeFile(path.join(root, name), content);

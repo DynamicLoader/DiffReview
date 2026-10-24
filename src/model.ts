@@ -34,6 +34,7 @@ export interface ReviewSession {
   headAtStart: string;
   createdAt: string;
   comments: ReviewComment[];
+  reviewedFiles?: string[];
 }
 export interface ReviewStore { version: 1; activeId?: string; sessions: ReviewSession[] }
 export interface LocatedAnchor extends LineRange { status: AnchorStatus }
@@ -78,8 +79,8 @@ export function locateAnchor(anchor: Anchor, text: string): LocatedAnchor {
   return { start, end: start + anchor.lines.length - 1, status: start === anchor.start ? 'current' : 'moved' };
 }
 
-export function newSession(fields: Omit<ReviewSession, 'id' | 'createdAt' | 'comments'>): ReviewSession {
-  return { ...fields, id: randomUUID(), createdAt: new Date().toISOString(), comments: [] };
+export function newSession(fields: Omit<ReviewSession, 'id' | 'createdAt' | 'comments' | 'reviewedFiles'>): ReviewSession {
+  return { ...fields, id: randomUUID(), createdAt: new Date().toISOString(), comments: [], reviewedFiles: [] };
 }
 export function makeComment(fields: Omit<ReviewComment, 'id' | 'createdAt' | 'updatedAt' | 'resolved'>): ReviewComment {
   const now = new Date().toISOString();

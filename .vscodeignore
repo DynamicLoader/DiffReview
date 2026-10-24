@@ -3,9 +3,12 @@ src/**
 test/**
 scripts/**
 .vscode/**
+.github/**
 .vscode-test/**
+deliverables/**
 *.zip
 *.vsix
 package-lock.json
 tsconfig.json
 TESTING.md
+DEVELOPMENT.md
