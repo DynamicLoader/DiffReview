@@ -2,7 +2,7 @@
   "name": "local-diff-review",
   "displayName": "Local Diff Review",
   "description": "Review any Git baseline against your working tree with native diffs, inline comments and LLM-ready exports.",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "publisher": "DynamicLoader",
   "repository": {
     "type": "git",
